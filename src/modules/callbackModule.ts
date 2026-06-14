@@ -10,6 +10,7 @@ import {
   CallbackHandler,
   CallbackType,
   CallbackStatus,
+  CallbackEventGroup,
   ActivitySignupData,
   UserDynamicData
 } from '../types';
@@ -36,6 +37,22 @@ export class CallbackModule extends BaseModule {
     if (this.messageModule) {
       this.messageModule.sendSystemNotification(userId, content, category, relatedId, relatedType);
     }
+  }
+
+  private getEventGroup(eventType: string): CallbackEventGroup {
+    const businessPrefixes = ['activity_signup', 'post_publish', 'task_complete'];
+    for (const prefix of businessPrefixes) {
+      if (eventType === prefix || eventType.startsWith(prefix + '_')) {
+        return 'business';
+      }
+    }
+    if (eventType.startsWith('user_dynamic_')) {
+      return 'dynamic';
+    }
+    if (eventType.startsWith('report_')) {
+      return 'governance';
+    }
+    return 'business';
   }
 
   private setupEventListeners(): void {
@@ -419,6 +436,9 @@ export class CallbackModule extends BaseModule {
     if (params.callbackUrl) {
       records = records.filter(r => r.callbackUrl === params.callbackUrl);
     }
+    if (params.group) {
+      records = records.filter(r => this.getEventGroup(r.eventType) === params.group);
+    }
 
     records.sort((a, b) => b.createdAt - a.createdAt);
     return this.callbackStore.paginate(records, params);
@@ -477,16 +497,32 @@ export class CallbackModule extends BaseModule {
 
     if (record.callbackUrl) {
       const result = await this.simulateHttpPush(record.callbackUrl, record.payload);
+      const retryEntry = {
+        attemptedAt: getCurrentTime(),
+        success: result.success,
+        response: result.response,
+        error: result.error
+      };
+      const existingHistory = record.retryHistory || [];
       this.callbackStore.update(recordId, {
         status: result.success ? 'success' : 'failed',
         response: result.response,
-        errorMessage: result.error
+        errorMessage: result.error,
+        retryHistory: [...existingHistory, retryEntry]
       });
       return result.success;
     }
 
     this.invokeLocalHandlers(record.type, record.payload);
-    this.callbackStore.update(recordId, { status: 'success' });
+    const localRetryEntry = {
+      attemptedAt: getCurrentTime(),
+      success: true
+    };
+    const localExistingHistory = record.retryHistory || [];
+    this.callbackStore.update(recordId, {
+      status: 'success',
+      retryHistory: [...localExistingHistory, localRetryEntry]
+    });
     return true;
   }
 
@@ -548,5 +584,28 @@ export class CallbackModule extends BaseModule {
       throw new Error('只有管理员可以清除回调记录');
     }
     this.callbackStore.clear();
+  }
+
+  getCallbackStatsByGroup(): { group: CallbackEventGroup; total: number; success: number; failed: number; pending: number; retrying: number }[] {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以查看回调统计');
+    }
+
+    const records = this.callbackStore.getAll();
+    const statsMap = new Map<CallbackEventGroup, { group: CallbackEventGroup; total: number; success: number; failed: number; pending: number; retrying: number }>();
+
+    const groups: CallbackEventGroup[] = ['business', 'dynamic', 'governance'];
+    groups.forEach(g => {
+      statsMap.set(g, { group: g, total: 0, success: 0, failed: 0, pending: 0, retrying: 0 });
+    });
+
+    records.forEach(r => {
+      const group = this.getEventGroup(r.eventType);
+      const stats = statsMap.get(group)!;
+      stats.total++;
+      stats[r.status]++;
+    });
+
+    return Array.from(statsMap.values());
   }
 }

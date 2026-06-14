@@ -38,7 +38,7 @@ export interface UserProfile extends BaseEntity {
 
 export type ContentStatus = 'draft' | 'published' | 'reviewing' | 'hidden' | 'deleted';
 
-export type ReportStatus = 'pending' | 'processing' | 'resolved' | 'rejected';
+export type ReportStatus = 'pending' | 'processing' | 'resolved' | 'rejected' | 'appealed' | 'reviewed';
 
 export type ReportType = 'spam' | 'harassment' | 'violence' | 'pornography' | 'other';
 

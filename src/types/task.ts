@@ -27,6 +27,7 @@ export interface HelpTask extends BaseEntity {
   isAnonymous: boolean;
   anonymousName?: string;
   relatedPostId?: string;
+  reviewId?: string;
 }
 
 export interface CreateTaskParams {
@@ -52,6 +53,7 @@ export interface TaskListParams extends PaginationParams {
   sortBy?: 'latest' | 'bounty_high' | 'deadline' | 'most_applied';
   minBounty?: number;
   maxBounty?: number;
+  reviewed?: boolean;
 }
 
 export type TaskListResult = PaginationResult<HelpTask>;

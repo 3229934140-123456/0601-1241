@@ -4,6 +4,8 @@ export type CallbackType = 'activity_signup' | 'user_dynamic_sync' | 'post_publi
 
 export type CallbackStatus = 'pending' | 'success' | 'failed' | 'retrying';
 
+export type CallbackEventGroup = 'business' | 'dynamic' | 'governance';
+
 export interface CallbackRecord extends BaseEntity {
   type: CallbackType;
   eventType: string;
@@ -14,6 +16,7 @@ export interface CallbackRecord extends BaseEntity {
   lastRetryAt?: number;
   response?: string;
   errorMessage?: string;
+  retryHistory?: Array<{ attemptedAt: number; success: boolean; response?: string; error?: string }>;
 }
 
 export interface ActivitySignupData {
@@ -52,6 +55,7 @@ export interface CallbackParams extends PaginationParams {
   status?: CallbackStatus;
   eventType?: string;
   callbackUrl?: string;
+  group?: CallbackEventGroup;
 }
 
 export type CallbackListResult = PaginationResult<CallbackRecord>;

@@ -19,6 +19,18 @@ export interface Report extends BaseEntity {
   action?: ReportAction;
   internalNote?: string;
   muteDuration?: number;
+  appealInfo?: {
+    appellantId: string;
+    appealReason: string;
+    appealedAt: number;
+    appealImages?: string[];
+  };
+  reviewInfo?: {
+    reviewerId: string;
+    reviewResult: 'upheld' | 'overturned';
+    reviewReason: string;
+    reviewedAt: number;
+  };
 }
 
 export interface UserReportView {
@@ -32,6 +44,8 @@ export interface UserReportView {
   action?: ReportAction;
   createdAt: number;
   handledAt?: number;
+  appealStatus?: 'none' | 'pending' | 'upheld' | 'overturned';
+  reviewResult?: 'upheld' | 'overturned';
 }
 
 export interface CreateReportParams {

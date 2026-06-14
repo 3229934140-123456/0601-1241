@@ -151,6 +151,12 @@ export class TaskModule extends BaseModule {
       tasks = tasks.filter(t => t.bountyAmount <= params.maxBounty!);
     }
 
+    if (params.reviewed === true) {
+      tasks = tasks.filter(t => t.status === 'completed' && t.reviewId !== undefined);
+    } else if (params.reviewed === false) {
+      tasks = tasks.filter(t => t.status === 'completed' && t.reviewId === undefined);
+    }
+
     switch (params.sortBy) {
       case 'bounty_high':
         tasks.sort((a, b) => b.bountyAmount - a.bountyAmount);
@@ -439,6 +445,10 @@ export class TaskModule extends BaseModule {
       'review'
     );
 
+    this.taskStore.update(params.taskId, {
+      reviewId: review.id
+    });
+
     this.emit('task:rate', { taskId: params.taskId, review, task: this.taskStore.getById(params.taskId) });
     return review;
   }
@@ -530,5 +540,17 @@ export class TaskModule extends BaseModule {
       tasks = tasks.filter(t => t.status === status);
     }
     return tasks.length;
+  }
+
+  getTaskWithReview(taskId: string): { task: HelpTask; review?: TaskReview } | undefined {
+    const task = this.taskStore.getById(taskId);
+    if (!task) return undefined;
+
+    let review: TaskReview | undefined;
+    if (task.reviewId) {
+      review = this.reviewStore.getById(task.reviewId);
+    }
+
+    return { task, review };
   }
 }

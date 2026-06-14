@@ -162,7 +162,7 @@ export class ReportModule extends BaseModule {
     const report = this.reportStore.getById(reportId);
     if (!report) return undefined;
 
-    if (report.reporterId !== this.currentUserId && !this.isAdmin) {
+    if (report.reporterId !== this.currentUserId && report.reportedUserId !== this.currentUserId && !this.isAdmin) {
       throw new Error('无权限查看此举报');
     }
 
@@ -175,7 +175,7 @@ export class ReportModule extends BaseModule {
     let reports = this.reportStore.getAll();
 
     if (!this.isAdmin) {
-      reports = reports.filter(r => r.reporterId === this.currentUserId);
+      reports = reports.filter(r => r.reporterId === this.currentUserId || r.reportedUserId === this.currentUserId);
     }
 
     if (params.status) {
@@ -209,7 +209,7 @@ export class ReportModule extends BaseModule {
     const report = this.reportStore.getById(params.reportId);
     if (!report) return undefined;
 
-    if (report.status !== 'pending' && report.status !== 'processing') {
+    if (report.status !== 'pending' && report.status !== 'processing' && report.status !== 'appealed') {
       throw new Error('此举报已处理完毕');
     }
 
@@ -269,6 +269,152 @@ export class ReportModule extends BaseModule {
 
     this.emit('report:handle', { reportId: params.reportId, status: params.status, action });
     return updated;
+  }
+
+  submitAppeal(reportId: string, reason: string, images?: string[]): UserReportView {
+    this.requireLogin();
+    const userId = this.currentUserId!;
+
+    const report = this.reportStore.getById(reportId);
+    if (!report) {
+      throw new Error('举报记录不存在');
+    }
+
+    if (report.reportedUserId !== userId) {
+      throw new Error('只有被举报人才能提交申诉');
+    }
+
+    if (report.status !== 'resolved' && report.status !== 'rejected') {
+      throw new Error('当前举报状态不允许申诉');
+    }
+
+    if (report.appealInfo) {
+      throw new Error('已提交过申诉，请勿重复提交');
+    }
+
+    this.checkContentSensitive(reason);
+
+    const appealInfo = {
+      appellantId: userId,
+      appealReason: this.filterContent(reason),
+      appealedAt: Date.now(),
+      appealImages: images
+    };
+
+    const updated = this.reportStore.update(reportId, {
+      status: 'appealed',
+      appealInfo
+    });
+
+    if (this.messageModule) {
+      this.messageModule.sendSystemNotification(
+        report.reporterId,
+        `您提交的举报已被对方申诉，请等待管理员复核`,
+        'system',
+        report.id,
+        'report'
+      );
+    }
+
+    this.emit('report:appeal', { reportId, appealInfo });
+    return this.toUserView(updated!);
+  }
+
+  reviewAppeal(params: { reportId: string; result: 'upheld' | 'overturned'; reason: string }): Report {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以复核申诉');
+    }
+
+    const report = this.reportStore.getById(params.reportId);
+    if (!report) {
+      throw new Error('举报记录不存在');
+    }
+
+    if (report.status !== 'appealed') {
+      throw new Error('当前举报状态不允许复核');
+    }
+
+    if (!report.appealInfo) {
+      throw new Error('未找到申诉信息');
+    }
+
+    const reviewInfo = {
+      reviewerId: this.currentUserId!,
+      reviewResult: params.result,
+      reviewReason: params.reason,
+      reviewedAt: Date.now()
+    };
+
+    const updated = this.reportStore.update(params.reportId, {
+      status: 'reviewed',
+      reviewInfo
+    });
+
+    if (params.result === 'overturned') {
+      this.rollbackReportedContentAction(report);
+    }
+
+    if (this.messageModule) {
+      this.messageModule.sendSystemNotification(
+        report.reporterId,
+        params.result === 'upheld'
+          ? `您的举报申诉复核结果：维持原判，原因：${params.reason}`
+          : `您的举报申诉复核结果：已推翻原判，原因：${params.reason}`,
+        'system',
+        report.id,
+        'report'
+      );
+
+      this.messageModule.sendSystemNotification(
+        report.reportedUserId,
+        params.result === 'upheld'
+          ? `您的申诉复核结果：维持原判，原因：${params.reason}`
+          : `您的申诉复核结果：已推翻原判，原因：${params.reason}`,
+        'system',
+        report.id,
+        'report'
+      );
+    }
+
+    this.emit('report:review', { reportId: params.reportId, result: params.result, reviewInfo });
+    return updated!;
+  }
+
+  private rollbackReportedContentAction(report: Report): void {
+    const action = report.action;
+    if (!action || action === 'no_action') return;
+
+    switch (report.contentType) {
+      case 'post':
+        if (this.postModule) {
+          if (action === 'hide' || action === 'warn' || action === 'mute') {
+            this.postModule.updatePost(report.contentId, { status: 'published' });
+          } else if (action === 'delete') {
+            this.postModule.updatePost(report.contentId, { status: 'published' });
+          }
+        }
+        break;
+      case 'comment':
+        if (this.postModule) {
+          if (action === 'hide' || action === 'warn' || action === 'mute') {
+            this.postModule.updatePost(report.contentId, { status: 'published' });
+          }
+        }
+        break;
+      case 'message':
+        if (this.messageModule) {
+          this.messageModule.restoreMessage(report.contentId);
+        }
+        break;
+      case 'task':
+        break;
+      case 'user':
+        break;
+    }
+
+    if ((action === 'mute') && this.userModule && report.muteDuration) {
+      this.userModule.unmuteUser(report.reportedUserId);
+    }
   }
 
   private getReportedUserNotification(action: ReportAction, handleResult: string, muteDuration?: number): string | null {
@@ -339,6 +485,13 @@ export class ReportModule extends BaseModule {
   }
 
   private toUserView(report: Report): UserReportView {
+    let appealStatus: 'none' | 'pending' | 'upheld' | 'overturned' = 'none';
+    if (report.appealInfo && !report.reviewInfo) {
+      appealStatus = 'pending';
+    } else if (report.reviewInfo) {
+      appealStatus = report.reviewInfo.reviewResult;
+    }
+
     return {
       id: report.id,
       type: report.type,
@@ -349,7 +502,9 @@ export class ReportModule extends BaseModule {
       handleResult: report.handleResult,
       action: report.action,
       createdAt: report.createdAt,
-      handledAt: report.handledAt
+      handledAt: report.handledAt,
+      appealStatus,
+      reviewResult: report.reviewInfo?.reviewResult
     };
   }
 
@@ -368,19 +523,32 @@ export class ReportModule extends BaseModule {
     return paginate(userViews, params.page || 1, params.pageSize || 20);
   }
 
+  getMyAppeals(params: { page?: number; pageSize?: number }): UserReportListResult {
+    this.requireLogin();
+
+    let reports = this.reportStore.findMany(r => r.reportedUserId === this.currentUserId && !!r.appealInfo);
+
+    reports.sort((a, b) => b.appealInfo!.appealedAt - a.appealInfo!.appealedAt);
+
+    const userViews = reports.map(r => this.toUserView(r));
+    return paginate(userViews, params.page || 1, params.pageSize || 20);
+  }
+
   getReportStats(): {
     total: number;
     pending: number;
     processing: number;
     resolved: number;
     rejected: number;
+    appealed: number;
+    reviewed: number;
   } {
     if (!this.isAdmin) {
       throw new Error('只有管理员可以查看举报统计');
     }
 
     const reports = this.reportStore.getAll();
-    const stats = { total: reports.length, pending: 0, processing: 0, resolved: 0, rejected: 0 };
+    const stats = { total: reports.length, pending: 0, processing: 0, resolved: 0, rejected: 0, appealed: 0, reviewed: 0 };
     reports.forEach(r => { stats[r.status]++; });
     return stats;
   }

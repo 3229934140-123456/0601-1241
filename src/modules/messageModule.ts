@@ -134,6 +134,22 @@ export class MessageModule extends BaseModule {
       c => c.participants.includes(userId)
     );
 
+    conversations = conversations.map(conv => {
+      if (conv.lastMessage && (conv.lastMessage.status === 'hidden' || conv.lastMessage.status === 'deleted')) {
+        const convMessages = this.messageStore.findMany(
+          m => (m as any).conversationId === conv.id &&
+            m.status !== 'hidden' &&
+            m.status !== 'deleted'
+        );
+        convMessages.sort((a, b) => b.createdAt - a.createdAt);
+        const lastVisible = convMessages[0] || undefined;
+        return { ...conv, lastMessage: lastVisible };
+      }
+      return conv;
+    });
+
+    conversations = conversations.filter(conv => conv.lastMessage !== undefined);
+
     conversations.sort((a, b) => b.updatedAt - a.updatedAt);
 
     const result = this.conversationStore.paginate(conversations, params);
@@ -296,7 +312,7 @@ export class MessageModule extends BaseModule {
     const userId = this.currentUserId!;
 
     let messages = this.messageStore.findMany(
-      m => m.type === 'system' && m.receiverId === userId && m.status !== 'deleted'
+      m => m.type === 'system' && m.receiverId === userId && m.status !== 'deleted' && m.status !== 'hidden'
     ) as SystemMessage[];
 
     if (params.category) {
@@ -388,7 +404,8 @@ export class MessageModule extends BaseModule {
     const userId = this.currentUserId!;
 
     const messages = this.messageStore.findMany(
-      m => m.receiverId === userId && m.status === 'unread'
+      m => m.receiverId === userId &&
+        m.status === 'unread'
     );
 
     const count: UnreadCount = {
@@ -497,5 +514,42 @@ export class MessageModule extends BaseModule {
 
     messages.sort((a, b) => b.createdAt - a.createdAt);
     return this.messageStore.paginate(messages, params);
+  }
+
+  getModerationRecords(params: MessageListParams & { moderationStatus?: 'hidden' | 'deleted' } = {}): MessageListResult {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以查看审核记录');
+    }
+
+    let messages = this.messageStore.findMany(
+      m => m.status === 'hidden' || m.status === 'deleted'
+    );
+
+    if (params.type) {
+      messages = messages.filter(m => m.type === params.type);
+    }
+
+    if (params.moderationStatus) {
+      messages = messages.filter(m => m.status === params.moderationStatus);
+    }
+
+    messages.sort((a, b) => b.createdAt - a.createdAt);
+    return this.messageStore.paginate(messages, params);
+  }
+
+  restoreMessage(messageId: string): boolean {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以恢复消息');
+    }
+
+    const message = this.messageStore.getById(messageId);
+    if (!message) return false;
+
+    if (message.status !== 'hidden') {
+      throw new Error('只能恢复被隐藏的消息');
+    }
+
+    this.messageStore.update(messageId, { status: 'unread' });
+    return true;
   }
 }
