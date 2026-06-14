@@ -16,6 +16,14 @@ export interface PaginationResult<T> {
   pageSize: number;
 }
 
+export interface MuteInfo {
+  isMuted: boolean;
+  mutedAt?: number;
+  muteDuration?: number;
+  muteExpiresAt?: number;
+  muteReason?: string;
+}
+
 export interface UserProfile extends BaseEntity {
   id: string;
   nickname: string;
@@ -25,6 +33,7 @@ export interface UserProfile extends BaseEntity {
   level: number;
   isVerified?: boolean;
   tags?: string[];
+  muteInfo?: MuteInfo;
 }
 
 export type ContentStatus = 'draft' | 'published' | 'reviewing' | 'hidden' | 'deleted';

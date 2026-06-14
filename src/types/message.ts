@@ -23,7 +23,7 @@ export interface PrivateMessage extends Message {
 
 export interface SystemMessage extends Message {
   type: 'system';
-  category: 'task' | 'post' | 'comment' | 'like' | 'follow' | 'system' | 'activity';
+  category: 'task' | 'task_complete' | 'task_rate' | 'post' | 'comment' | 'like' | 'follow' | 'system' | 'activity';
   relatedId?: string;
   relatedType?: string;
 }

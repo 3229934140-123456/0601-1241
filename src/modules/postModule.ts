@@ -56,6 +56,7 @@ export class PostModule extends BaseModule {
 
   publishPost(params: CreatePostParams): Post {
     this.requireLogin();
+    this.checkMute();
     const userId = this.currentUserId!;
 
     this.checkContentSensitive(params.title);
@@ -330,6 +331,7 @@ export class PostModule extends BaseModule {
 
   publishComment(params: CreateCommentParams): Comment {
     this.requireLogin();
+    this.checkMute();
     const userId = this.currentUserId!;
 
     this.checkContentSensitive(params.content);

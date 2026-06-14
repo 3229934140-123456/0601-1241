@@ -21,6 +21,19 @@ export interface Report extends BaseEntity {
   muteDuration?: number;
 }
 
+export interface UserReportView {
+  id: string;
+  type: ReportType;
+  contentType: 'post' | 'comment' | 'user' | 'task' | 'message';
+  reason: string;
+  images?: string[];
+  status: ReportStatus;
+  handleResult?: string;
+  action?: ReportAction;
+  createdAt: number;
+  handledAt?: number;
+}
+
 export interface CreateReportParams {
   type: ReportType;
   contentType: 'post' | 'comment' | 'user' | 'task' | 'message';
@@ -38,6 +51,8 @@ export interface ReportListParams extends PaginationParams {
 }
 
 export type ReportListResult = PaginationResult<Report>;
+
+export type UserReportListResult = PaginationResult<UserReportView>;
 
 export interface HandleReportParams {
   reportId: string;

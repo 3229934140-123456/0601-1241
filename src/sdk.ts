@@ -58,6 +58,12 @@ export class JobSocialSDK {
     this.message.setDependencies(this.user);
     this.report.setDependencies(this.user, this.post, this.message, this.task);
     this.callback.setMessageModule(this.message);
+
+    this.post.setUserModule(this.user);
+    this.message.setUserModule(this.user);
+    this.task.setUserModule(this.user);
+    this.topic.setUserModule(this.user);
+    this.report.setUserModule(this.user);
   }
 
   static getInstance(config?: SDKConfig): JobSocialSDK {

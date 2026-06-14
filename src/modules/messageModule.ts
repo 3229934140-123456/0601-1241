@@ -59,6 +59,7 @@ export class MessageModule extends BaseModule {
 
   sendPrivateMessage(params: SendMessageParams): PrivateMessage {
     this.requireLogin();
+    this.checkMute();
     const senderId = this.currentUserId!;
 
     if (senderId === params.receiverId) {
@@ -416,6 +417,14 @@ export class MessageModule extends BaseModule {
     if (message.senderId !== userId && message.receiverId !== userId) {
       throw new Error('无权限删除此消息');
     }
+
+    this.messageStore.update(messageId, { status: 'deleted' });
+    return true;
+  }
+
+  adminDeleteMessage(messageId: string): boolean {
+    const message = this.messageStore.getById(messageId);
+    if (!message) return false;
 
     this.messageStore.update(messageId, { status: 'deleted' });
     return true;

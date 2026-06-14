@@ -10,8 +10,11 @@ import {
   ReportStatus,
   ReportType,
   ReportAction,
-  UserProfile
+  UserProfile,
+  UserReportView,
+  UserReportListResult
 } from '../types';
+import { paginate } from '../utils/helpers';
 
 export class ReportModule extends BaseModule {
   private reportStore: BaseStore<Report>;
@@ -40,10 +43,6 @@ export class ReportModule extends BaseModule {
     this.postModule = postModule;
     this.messageModule = messageModule;
     this.taskModule = taskModule || this.taskModule;
-  }
-
-  setTaskModule(taskModule: any): void {
-    this.taskModule = taskModule;
   }
 
   private getUser(userId: string): UserProfile {
@@ -121,7 +120,7 @@ export class ReportModule extends BaseModule {
     return { reportedUserId, contentSnapshot };
   }
 
-  submitReport(params: CreateReportParams): Report {
+  submitReport(params: CreateReportParams): UserReportView {
     this.requireLogin();
     const reporterId = this.currentUserId!;
 
@@ -154,10 +153,10 @@ export class ReportModule extends BaseModule {
     );
 
     this.emit('report:submit', report);
-    return this.desensitizeReport(report);
+    return this.toUserView(report);
   }
 
-  getReport(reportId: string): Report | undefined {
+  getReport(reportId: string): Report | UserReportView | undefined {
     this.requireLogin();
 
     const report = this.reportStore.getById(reportId);
@@ -167,10 +166,10 @@ export class ReportModule extends BaseModule {
       throw new Error('无权限查看此举报');
     }
 
-    return this.desensitizeReport(report);
+    return this.isAdmin ? report : this.toUserView(report);
   }
 
-  getReportList(params: ReportListParams): ReportListResult {
+  getReportList(params: ReportListParams): ReportListResult | UserReportListResult {
     this.requireLogin();
 
     let reports = this.reportStore.getAll();
@@ -194,9 +193,12 @@ export class ReportModule extends BaseModule {
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
 
-    const result = this.reportStore.paginate(reports, params);
-    result.list = result.list.map(r => this.desensitizeReport(r));
-    return result;
+    if (this.isAdmin) {
+      return this.reportStore.paginate(reports, params);
+    }
+
+    const userViews = reports.map(r => this.toUserView(r));
+    return paginate(userViews, params.page || 1, params.pageSize || 20);
   }
 
   handleReport(params: HandleReportParams): Report | undefined {
@@ -213,6 +215,7 @@ export class ReportModule extends BaseModule {
 
     const handler = this.getUser(this.currentUserId!);
     const action = params.action || (params.status === 'resolved' ? 'hide' : 'no_action');
+    const muteDuration = params.muteDuration;
 
     const updated = this.reportStore.update(params.reportId, {
       status: params.status,
@@ -222,11 +225,11 @@ export class ReportModule extends BaseModule {
       handleResult: params.handleResult,
       action,
       internalNote: params.internalNote,
-      muteDuration: params.muteDuration
+      muteDuration
     });
 
     if (params.status === 'resolved') {
-      this.executeReportedContentAction(report, action);
+      this.executeReportedContentAction(report, action, muteDuration);
 
       if (this.userModule) {
         this.userModule.addContribution(report.reporterId, 'report_valid', report.id);
@@ -241,7 +244,7 @@ export class ReportModule extends BaseModule {
           'report'
         );
 
-        const reportedMsg = this.getReportedUserNotification(report, action, params.handleResult);
+        const reportedMsg = this.getReportedUserNotification(action, params.handleResult, muteDuration);
         if (reportedMsg) {
           this.messageModule.sendSystemNotification(
             report.reportedUserId,
@@ -268,7 +271,7 @@ export class ReportModule extends BaseModule {
     return updated;
   }
 
-  private getReportedUserNotification(report: Report, action: ReportAction, handleResult: string): string | null {
+  private getReportedUserNotification(action: ReportAction, handleResult: string, muteDuration?: number): string | null {
     switch (action) {
       case 'hide':
         return `您发布的内容因违反社区规范已被隐藏，原因：${handleResult}`;
@@ -277,15 +280,15 @@ export class ReportModule extends BaseModule {
       case 'warn':
         return `系统警告：您发布的内容被举报违反社区规范，原因：${handleResult}。请注意遵守社区规则。`;
       case 'mute':
-        const duration = report.muteDuration ? `（${report.muteDuration}天）` : '';
-        return `您因违反社区规范已被禁言${duration}，原因：${handleResult}`;
+        const days = muteDuration ? `${muteDuration}天` : '';
+        return `您因违反社区规范已被禁言${days}，原因：${handleResult}`;
       case 'no_action':
       default:
         return null;
     }
   }
 
-  private executeReportedContentAction(report: Report, action: ReportAction): void {
+  private executeReportedContentAction(report: Report, action: ReportAction, muteDuration?: number): void {
     if (action === 'no_action') return;
 
     const shouldHide = action === 'hide' || action === 'warn' || action === 'mute';
@@ -295,7 +298,7 @@ export class ReportModule extends BaseModule {
       case 'post':
         if (this.postModule) {
           if (shouldDelete) {
-          this.postModule.deletePost(report.contentId);
+            this.postModule.deletePost(report.contentId);
           } else if (shouldHide) {
             this.postModule.hidePost(report.contentId);
           }
@@ -313,7 +316,7 @@ export class ReportModule extends BaseModule {
       case 'message':
         if (this.messageModule) {
           if (shouldDelete) {
-            this.messageModule.deleteMessage(report.contentId);
+            this.messageModule.adminDeleteMessage(report.contentId);
           } else if (shouldHide) {
             this.messageModule.hideMessage(report.contentId);
           }
@@ -327,35 +330,30 @@ export class ReportModule extends BaseModule {
         }
         break;
       case 'user':
-        if (action === 'mute' && this.userModule) {
-        }
         break;
     }
-  }
 
-  private desensitizeReport(report: Report): Report {
-    if (this.isAdmin) {
-      return report;
+    if (action === 'mute' && this.userModule && muteDuration) {
+      this.userModule.muteUser(report.reportedUserId, muteDuration, report.reason || '违反社区规范');
     }
-
-    const {
-      reportedUser,
-      handler,
-      handlerId,
-      internalNote,
-      ...rest
-    } = report;
-
-    return {
-      ...rest,
-      reportedUser: undefined,
-      handler: undefined,
-      handlerId: undefined,
-      internalNote: undefined
-    } as Report;
   }
 
-  getMyReports(params: { page?: number; pageSize?: number; status?: ReportStatus }): ReportListResult {
+  private toUserView(report: Report): UserReportView {
+    return {
+      id: report.id,
+      type: report.type,
+      contentType: report.contentType,
+      reason: report.reason,
+      images: report.images,
+      status: report.status,
+      handleResult: report.handleResult,
+      action: report.action,
+      createdAt: report.createdAt,
+      handledAt: report.handledAt
+    };
+  }
+
+  getMyReports(params: { page?: number; pageSize?: number; status?: ReportStatus }): UserReportListResult {
     this.requireLogin();
 
     let reports = this.reportStore.findMany(r => r.reporterId === this.currentUserId);
@@ -366,9 +364,8 @@ export class ReportModule extends BaseModule {
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
 
-    const result = this.reportStore.paginate(reports, params);
-    result.list = result.list.map(r => this.desensitizeReport(r));
-    return result;
+    const userViews = reports.map(r => this.toUserView(r));
+    return paginate(userViews, params.page || 1, params.pageSize || 20);
   }
 
   getReportStats(): {

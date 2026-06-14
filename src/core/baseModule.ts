@@ -6,11 +6,16 @@ export abstract class BaseModule {
   protected context: SDKContext;
   protected eventBus: EventBus;
   protected sensitiveWordFilter: SensitiveWordFilter;
+  private _userModule: any;
 
   constructor(context: SDKContext) {
     this.context = context;
     this.eventBus = context.eventBus;
     this.sensitiveWordFilter = context.sensitiveWordFilter;
+  }
+
+  setUserModule(userModule: any): void {
+    this._userModule = userModule;
   }
 
   protected get currentUserId(): string | undefined {
@@ -29,6 +34,16 @@ export abstract class BaseModule {
   protected requireLogin(): void {
     if (!this.currentUserId) {
       throw new Error('用户未登录，请先设置当前用户');
+    }
+  }
+
+  protected checkMute(): void {
+    if (!this.currentUserId || !this._userModule) return;
+    if (this._userModule.isUserMuted(this.currentUserId)) {
+      const muteInfo = this._userModule.getUserMuteInfo(this.currentUserId);
+      const remaining = this._userModule.getMuteRemainingTime(this.currentUserId);
+      const days = Math.ceil(remaining / (24 * 60 * 60 * 1000));
+      throw new Error(`您已被禁言，剩余${days}天。原因：${muteInfo?.muteReason || '违反社区规范'}`);
     }
   }
 

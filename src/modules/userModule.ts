@@ -10,7 +10,8 @@ import {
   BlacklistItem,
   ContributionRecord,
   ContributionRankingParams,
-  PaginationResult
+  PaginationResult,
+  MuteInfo
 } from '../types';
 import { calculateLevel, getContributionConfig, paginate } from '../utils/helpers';
 
@@ -320,5 +321,57 @@ export class UserModule extends BaseModule {
     }
     records.sort((a, b) => b.createdAt - a.createdAt);
     return this.contributionStore.paginate(records, params);
+  }
+
+  muteUser(userId: string, durationDays: number, reason: string): UserProfile | undefined {
+    const user = this.userStore.getById(userId);
+    if (!user) return undefined;
+
+    const now = Date.now();
+    const muteInfo: MuteInfo = {
+      isMuted: true,
+      mutedAt: now,
+      muteDuration: durationDays,
+      muteExpiresAt: now + durationDays * 24 * 60 * 60 * 1000,
+      muteReason: reason
+    };
+
+    return this.userStore.update(userId, { muteInfo });
+  }
+
+  unmuteUser(userId: string): UserProfile | undefined {
+    const user = this.userStore.getById(userId);
+    if (!user) return undefined;
+
+    const muteInfo: MuteInfo = {
+      isMuted: false
+    };
+
+    return this.userStore.update(userId, { muteInfo });
+  }
+
+  isUserMuted(userId: string): boolean {
+    const user = this.userStore.getById(userId);
+    if (!user || !user.muteInfo || !user.muteInfo.isMuted) return false;
+
+    if (user.muteInfo.muteExpiresAt && Date.now() > user.muteInfo.muteExpiresAt) {
+      this.unmuteUser(userId);
+      return false;
+    }
+
+    return true;
+  }
+
+  getUserMuteInfo(userId: string): MuteInfo | undefined {
+    if (this.isUserMuted(userId)) {
+      return this.userStore.getById(userId)?.muteInfo;
+    }
+    return undefined;
+  }
+
+  getMuteRemainingTime(userId: string): number {
+    const user = this.userStore.getById(userId);
+    if (!user?.muteInfo?.muteExpiresAt) return 0;
+    return Math.max(0, user.muteInfo.muteExpiresAt - Date.now());
   }
 }

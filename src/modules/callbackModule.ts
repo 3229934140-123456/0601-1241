@@ -47,7 +47,7 @@ export class CallbackModule extends BaseModule {
         content: post.content,
         type: post.type,
         timestamp: post.createdAt
-      });
+      }, 'post_publish');
 
       this.syncUserDynamic({
         userId: post.userId,
@@ -108,7 +108,7 @@ export class CallbackModule extends BaseModule {
         taskId: data.taskId,
         task: data.task,
         timestamp: getCurrentTime()
-      });
+      }, 'task_complete');
 
       if (data.task?.claimerId) {
         this.syncUserDynamic({
@@ -124,7 +124,7 @@ export class CallbackModule extends BaseModule {
         this.notifyUser(
           data.task.publisherId,
           '您发布的互助任务已被完成，快去评价吧！',
-          'task',
+          'task_complete',
           data.taskId,
           'task'
         );
@@ -132,7 +132,7 @@ export class CallbackModule extends BaseModule {
         this.notifyUser(
           data.task.claimerId,
           '恭喜！您已成功完成互助任务。',
-          'task',
+          'task_complete',
           data.taskId,
           'task'
         );
@@ -153,11 +153,21 @@ export class CallbackModule extends BaseModule {
         relatedType: 'task'
       });
 
+      if (task.publisherId) {
+        this.notifyUser(
+          task.publisherId,
+          `您发布的互助任务已被评价，评分${review.rating}分`,
+          'task_rate',
+          review.taskId,
+          'task'
+        );
+      }
+
       if (task.claimerId) {
         this.notifyUser(
           task.claimerId,
           `您完成的任务获得了${review.rating}星评价：${review.comment}`,
-          'task',
+          'task_rate',
           review.taskId,
           'task'
         );
@@ -184,11 +194,11 @@ export class CallbackModule extends BaseModule {
         contentId: report.contentId,
         reason: report.reason,
         timestamp: report.createdAt
-      });
+      }, 'report_submit');
     });
 
     this.eventBus.on('activity:signup', (data: any) => {
-      this.pushCallback('activity_signup', data);
+      this.pushCallback('activity_signup', data, 'activity_signup');
     });
   }
 
@@ -239,9 +249,9 @@ export class CallbackModule extends BaseModule {
     return Array.isArray(urls) ? urls : [urls];
   }
 
-  private async pushCallback(type: CallbackType, payload: Record<string, any>): Promise<void> {
+  private async pushCallback(type: CallbackType, payload: Record<string, any>, customEventType?: string): Promise<void> {
     const urls = this.getCallbackUrls(type);
-    const eventType = type;
+    const eventType = customEventType || type;
 
     this.invokeLocalHandlers(type, payload);
 
@@ -369,7 +379,7 @@ export class CallbackModule extends BaseModule {
   }
 
   triggerCallback(type: CallbackType, eventType: string, payload: Record<string, any>): void {
-    this.pushCallback(type, payload);
+    this.pushCallback(type, payload, eventType);
   }
 
   triggerActivitySignup(data: ActivitySignupData): void {
@@ -400,7 +410,11 @@ export class CallbackModule extends BaseModule {
       records = records.filter(r => r.status === params.status);
     }
     if (params.eventType) {
-      records = records.filter(r => r.eventType === params.eventType);
+      records = records.filter(r =>
+        r.eventType === params.eventType ||
+        r.eventType.startsWith(params.eventType + '_') ||
+        r.type === params.eventType
+      );
     }
     if (params.callbackUrl) {
       records = records.filter(r => r.callbackUrl === params.callbackUrl);
