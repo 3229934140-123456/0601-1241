@@ -1,0 +1,25 @@
+{
+  "name": "job-social-sdk",
+  "version": "1.0.0",
+  "description": "社交互动平台 SDK - 为招聘类 App 提供求职互助功能",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node dist/index.js"
+  },
+  "keywords": [
+    "sdk",
+    "social",
+    "job",
+    "recruitment",
+    "community"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}
