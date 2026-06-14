@@ -86,9 +86,9 @@ export class CallbackModule extends BaseModule {
     this.eventBus.on('task:accept', (data: any) => {
       this.syncUserDynamic({
         userId: data.claimerId,
-        dynamicType: 'task_claim',
+        dynamicType: 'task_accept',
         dynamicId: data.taskId,
-        content: '任务已被接受',
+        content: '任务申请已被接受',
         timestamp: getCurrentTime(),
         relatedId: data.taskId,
         relatedType: 'task'
@@ -145,7 +145,7 @@ export class CallbackModule extends BaseModule {
 
       this.syncUserDynamic({
         userId: review.reviewerId,
-        dynamicType: 'task_complete',
+        dynamicType: 'task_rate',
         dynamicId: review.taskId,
         content: `评价了互助任务，评分${review.rating}分`,
         timestamp: getCurrentTime(),
@@ -226,32 +226,60 @@ export class CallbackModule extends BaseModule {
     }
   }
 
-  private async pushCallback(type: CallbackType, payload: Record<string, any>): Promise<void> {
-    const url = this.getCallbackUrl(type);
+  private getCallbackUrls(type: CallbackType): string[] {
+    const urlMap: Record<CallbackType, string | string[] | undefined> = {
+      'activity_signup': this.config.activitySignupUrl,
+      'user_dynamic_sync': this.config.userDynamicSyncUrl,
+      'post_publish': this.config.postPublishUrl,
+      'task_complete': this.config.taskCompleteUrl,
+      'report_submit': this.config.reportSubmitUrl
+    };
+    const urls = urlMap[type];
+    if (!urls) return [];
+    return Array.isArray(urls) ? urls : [urls];
+  }
 
-    const record = this.callbackStore.create(
-      {
-        type,
-        eventType: type,
-        callbackUrl: url || '',
-        payload,
-        status: 'pending' as CallbackStatus,
-        retryCount: 0
-      },
-      'cb'
-    );
+  private async pushCallback(type: CallbackType, payload: Record<string, any>): Promise<void> {
+    const urls = this.getCallbackUrls(type);
+    const eventType = type;
 
     this.invokeLocalHandlers(type, payload);
 
-    if (url) {
-      const result = await this.simulateHttpPush(url, payload);
-      this.callbackStore.update(record.id, {
-        status: result.success ? 'success' : 'failed',
-        response: result.response,
-        errorMessage: result.error
+    if (urls.length === 0) {
+      this.callbackStore.create(
+        {
+          type,
+          eventType,
+          callbackUrl: '',
+          payload,
+          status: 'success' as CallbackStatus,
+          retryCount: 0
+        },
+        'cb'
+      );
+      return;
+    }
+
+    for (const url of urls) {
+      const record = this.callbackStore.create(
+        {
+          type,
+          eventType,
+          callbackUrl: url,
+          payload,
+          status: 'pending' as CallbackStatus,
+          retryCount: 0
+        },
+        'cb'
+      );
+
+      this.simulateHttpPush(url, payload).then(result => {
+        this.callbackStore.update(record.id, {
+          status: result.success ? 'success' : 'failed',
+          response: result.response,
+          errorMessage: result.error
+        });
       });
-    } else {
-      this.callbackStore.update(record.id, { status: 'success' });
     }
   }
 
@@ -282,31 +310,46 @@ export class CallbackModule extends BaseModule {
   }
 
   private async syncUserDynamic(data: UserDynamicData): Promise<void> {
-    const url = this.getCallbackUrl('user_dynamic_sync');
-
-    const record = this.callbackStore.create(
-      {
-        type: 'user_dynamic_sync' as CallbackType,
-        eventType: 'user_dynamic_sync',
-        callbackUrl: url || '',
-        payload: data as unknown as Record<string, any>,
-        status: 'pending' as CallbackStatus,
-        retryCount: 0
-      },
-      'cb'
-    );
+    const urls = this.getCallbackUrls('user_dynamic_sync');
+    const eventType = `user_dynamic_${data.dynamicType}`;
 
     this.invokeLocalHandlers('user_dynamic_sync', data as unknown as Record<string, any>);
 
-    if (url) {
-      const result = await this.simulateHttpPush(url, data as unknown as Record<string, any>);
-      this.callbackStore.update(record.id, {
-        status: result.success ? 'success' : 'failed',
-        response: result.response,
-        errorMessage: result.error
+    if (urls.length === 0) {
+      this.callbackStore.create(
+        {
+          type: 'user_dynamic_sync' as CallbackType,
+          eventType,
+          callbackUrl: '',
+          payload: data as unknown as Record<string, any>,
+          status: 'success' as CallbackStatus,
+          retryCount: 0
+        },
+        'cb'
+      );
+      return;
+    }
+
+    for (const url of urls) {
+      const record = this.callbackStore.create(
+        {
+          type: 'user_dynamic_sync' as CallbackType,
+          eventType,
+          callbackUrl: url,
+          payload: data as unknown as Record<string, any>,
+          status: 'pending' as CallbackStatus,
+          retryCount: 0
+        },
+        'cb'
+      );
+
+      this.simulateHttpPush(url, data as unknown as Record<string, any>).then(result => {
+        this.callbackStore.update(record.id, {
+          status: result.success ? 'success' : 'failed',
+          response: result.response,
+          errorMessage: result.error
+        });
       });
-    } else {
-      this.callbackStore.update(record.id, { status: 'success' });
     }
   }
 
@@ -327,17 +370,6 @@ export class CallbackModule extends BaseModule {
 
   triggerCallback(type: CallbackType, eventType: string, payload: Record<string, any>): void {
     this.pushCallback(type, payload);
-  }
-
-  private getCallbackUrl(type: CallbackType): string | undefined {
-    const urlMap: Record<CallbackType, string | undefined> = {
-      'activity_signup': this.config.activitySignupUrl,
-      'user_dynamic_sync': this.config.userDynamicSyncUrl,
-      'post_publish': this.config.postPublishUrl,
-      'task_complete': this.config.taskCompleteUrl,
-      'report_submit': this.config.reportSubmitUrl
-    };
-    return urlMap[type];
   }
 
   triggerActivitySignup(data: ActivitySignupData): void {
@@ -367,6 +399,12 @@ export class CallbackModule extends BaseModule {
     if (params.status) {
       records = records.filter(r => r.status === params.status);
     }
+    if (params.eventType) {
+      records = records.filter(r => r.eventType === params.eventType);
+    }
+    if (params.callbackUrl) {
+      records = records.filter(r => r.callbackUrl === params.callbackUrl);
+    }
 
     records.sort((a, b) => b.createdAt - a.createdAt);
     return this.callbackStore.paginate(records, params);
@@ -381,6 +419,27 @@ export class CallbackModule extends BaseModule {
 
   getCallbacksByStatus(status: CallbackStatus, params: CallbackParams = {}): CallbackListResult {
     return this.getCallbackList({ ...params, status });
+  }
+
+  getCallbacksByEventType(eventType: string, params: CallbackParams = {}): CallbackListResult {
+    return this.getCallbackList({ ...params, eventType });
+  }
+
+  getCallbacksByUrl(callbackUrl: string, params: CallbackParams = {}): CallbackListResult {
+    return this.getCallbackList({ ...params, callbackUrl });
+  }
+
+  getCallbackUrlList(): string[] {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以查看回调地址列表');
+    }
+
+    const urls = new Set<string>();
+    const records = this.callbackStore.getAll();
+    records.forEach(r => {
+      if (r.callbackUrl) urls.add(r.callbackUrl);
+    });
+    return Array.from(urls);
   }
 
   async retryCallback(recordId: string): Promise<boolean> {
@@ -440,6 +499,34 @@ export class CallbackModule extends BaseModule {
     const stats = { total: records.length, success: 0, failed: 0, pending: 0, retrying: 0 };
     records.forEach(r => { stats[r.status]++; });
     return stats;
+  }
+
+  getCallbackStatsByUrl(): {
+    url: string;
+    total: number;
+    success: number;
+    failed: number;
+    pending: number;
+    retrying: number;
+  }[] {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以查看回调统计');
+    }
+
+    const records = this.callbackStore.getAll();
+    const statsMap = new Map<string, { url: string; total: number; success: number; failed: number; pending: number; retrying: number }>();
+
+    records.forEach(r => {
+      const url = r.callbackUrl || '(本地事件)';
+      if (!statsMap.has(url)) {
+        statsMap.set(url, { url, total: 0, success: 0, failed: 0, pending: 0, retrying: 0 });
+      }
+      const stats = statsMap.get(url)!;
+      stats.total++;
+      stats[r.status]++;
+    });
+
+    return Array.from(statsMap.values());
   }
 
   clearCallbacks(): void {

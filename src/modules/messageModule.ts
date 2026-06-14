@@ -159,7 +159,9 @@ export class MessageModule extends BaseModule {
     const userId = this.currentUserId!;
 
     let messages = this.messageStore.findMany(
-      m => (m.senderId === userId || m.receiverId === userId) && m.status !== 'deleted'
+      m => (m.senderId === userId || m.receiverId === userId) &&
+        m.status !== 'deleted' &&
+        m.status !== 'hidden'
     );
 
     if (params.type) {
@@ -189,7 +191,9 @@ export class MessageModule extends BaseModule {
     const conversationId = this.getConversationId(userId, targetUserId);
 
     let messages = this.messageStore.findMany(
-      m => (m as any).conversationId === conversationId && m.status !== 'deleted'
+      m => (m as any).conversationId === conversationId &&
+        m.status !== 'deleted' &&
+        m.status !== 'hidden'
     );
 
     messages.sort((a, b) => a.createdAt - b.createdAt);
@@ -438,6 +442,51 @@ export class MessageModule extends BaseModule {
   }
 
   getMessage(messageId: string): Message | undefined {
-    return this.messageStore.getById(messageId);
+    const message = this.messageStore.getById(messageId);
+    if (!message) return undefined;
+
+    if (!this.isAdmin && message.status === 'hidden') {
+      return undefined;
+    }
+
+    const userId = this.currentUserId;
+    if (!userId) {
+      return this.isAdmin ? message : undefined;
+    }
+
+    if (message.senderId !== userId && message.receiverId !== userId) {
+      if (!this.isAdmin) {
+        return undefined;
+      }
+    }
+
+    return message;
+  }
+
+  hideMessage(messageId: string): boolean {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以隐藏消息');
+    }
+
+    const message = this.messageStore.getById(messageId);
+    if (!message) return false;
+
+    this.messageStore.update(messageId, { status: 'hidden' });
+    return true;
+  }
+
+  getHiddenMessages(params: MessageListParams = {}): MessageListResult {
+    if (!this.isAdmin) {
+      throw new Error('只有管理员可以查看已隐藏消息');
+    }
+
+    let messages = this.messageStore.findMany(m => m.status === 'hidden');
+
+    if (params.type) {
+      messages = messages.filter(m => m.type === params.type);
+    }
+
+    messages.sort((a, b) => b.createdAt - a.createdAt);
+    return this.messageStore.paginate(messages, params);
   }
 }

@@ -28,7 +28,7 @@ export interface ActivitySignupData {
 
 export interface UserDynamicData {
   userId: string;
-  dynamicType: 'post_publish' | 'comment_publish' | 'task_claim' | 'task_complete' | 'follow' | 'like';
+  dynamicType: 'post_publish' | 'comment_publish' | 'task_claim' | 'task_accept' | 'task_complete' | 'task_rate' | 'follow' | 'like';
   dynamicId: string;
   content?: string;
   timestamp: number;
@@ -37,11 +37,11 @@ export interface UserDynamicData {
 }
 
 export interface CallbackConfig {
-  activitySignupUrl?: string;
-  userDynamicSyncUrl?: string;
-  postPublishUrl?: string;
-  taskCompleteUrl?: string;
-  reportSubmitUrl?: string;
+  activitySignupUrl?: string | string[];
+  userDynamicSyncUrl?: string | string[];
+  postPublishUrl?: string | string[];
+  taskCompleteUrl?: string | string[];
+  reportSubmitUrl?: string | string[];
   timeout?: number;
   maxRetries?: number;
   retryDelay?: number;
@@ -50,6 +50,8 @@ export interface CallbackConfig {
 export interface CallbackParams extends PaginationParams {
   type?: CallbackType;
   status?: CallbackStatus;
+  eventType?: string;
+  callbackUrl?: string;
 }
 
 export type CallbackListResult = PaginationResult<CallbackRecord>;

@@ -9,6 +9,7 @@ import {
   HandleReportParams,
   ReportStatus,
   ReportType,
+  ReportAction,
   UserProfile
 } from '../types';
 
@@ -136,15 +137,11 @@ export class ReportModule extends BaseModule {
     }
 
     const contentSnapshot = params.contentSnapshot || autoSnapshot;
-    const reporter = this.getUser(reporterId);
-    const reportedUser = reportedUserId ? this.getUser(reportedUserId) : undefined;
 
     const report = this.reportStore.create(
       {
         reporterId,
-        reporter,
         reportedUserId,
-        reportedUser,
         type: params.type,
         contentType: params.contentType,
         contentId: params.contentId,
@@ -157,7 +154,7 @@ export class ReportModule extends BaseModule {
     );
 
     this.emit('report:submit', report);
-    return report;
+    return this.desensitizeReport(report);
   }
 
   getReport(reportId: string): Report | undefined {
@@ -170,7 +167,7 @@ export class ReportModule extends BaseModule {
       throw new Error('无权限查看此举报');
     }
 
-    return report;
+    return this.desensitizeReport(report);
   }
 
   getReportList(params: ReportListParams): ReportListResult {
@@ -196,7 +193,10 @@ export class ReportModule extends BaseModule {
     }
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
-    return this.reportStore.paginate(reports, params);
+
+    const result = this.reportStore.paginate(reports, params);
+    result.list = result.list.map(r => this.desensitizeReport(r));
+    return result;
   }
 
   handleReport(params: HandleReportParams): Report | undefined {
@@ -212,17 +212,21 @@ export class ReportModule extends BaseModule {
     }
 
     const handler = this.getUser(this.currentUserId!);
+    const action = params.action || (params.status === 'resolved' ? 'hide' : 'no_action');
 
     const updated = this.reportStore.update(params.reportId, {
       status: params.status,
       handlerId: this.currentUserId!,
       handler,
       handledAt: Date.now(),
-      handleResult: params.handleResult
+      handleResult: params.handleResult,
+      action,
+      internalNote: params.internalNote,
+      muteDuration: params.muteDuration
     });
 
     if (params.status === 'resolved') {
-      this.hideReportedContent(report);
+      this.executeReportedContentAction(report, action);
 
       if (this.userModule) {
         this.userModule.addContribution(report.reporterId, 'report_valid', report.id);
@@ -237,13 +241,16 @@ export class ReportModule extends BaseModule {
           'report'
         );
 
-        this.messageModule.sendSystemNotification(
-          report.reportedUserId,
-          `您发布的内容因违反社区规范已被隐藏，原因：${params.handleResult}`,
-          'system',
-          report.id,
-          'report'
-        );
+        const reportedMsg = this.getReportedUserNotification(report, action, params.handleResult);
+        if (reportedMsg) {
+          this.messageModule.sendSystemNotification(
+            report.reportedUserId,
+            reportedMsg,
+            'system',
+            report.id,
+            'report'
+          );
+        }
       }
     }
 
@@ -257,36 +264,95 @@ export class ReportModule extends BaseModule {
       );
     }
 
-    this.emit('report:handle', { reportId: params.reportId, status: params.status });
+    this.emit('report:handle', { reportId: params.reportId, status: params.status, action });
     return updated;
   }
 
-  private hideReportedContent(report: Report): void {
+  private getReportedUserNotification(report: Report, action: ReportAction, handleResult: string): string | null {
+    switch (action) {
+      case 'hide':
+        return `您发布的内容因违反社区规范已被隐藏，原因：${handleResult}`;
+      case 'delete':
+        return `您发布的内容因违反社区规范已被删除，原因：${handleResult}`;
+      case 'warn':
+        return `系统警告：您发布的内容被举报违反社区规范，原因：${handleResult}。请注意遵守社区规则。`;
+      case 'mute':
+        const duration = report.muteDuration ? `（${report.muteDuration}天）` : '';
+        return `您因违反社区规范已被禁言${duration}，原因：${handleResult}`;
+      case 'no_action':
+      default:
+        return null;
+    }
+  }
+
+  private executeReportedContentAction(report: Report, action: ReportAction): void {
+    if (action === 'no_action') return;
+
+    const shouldHide = action === 'hide' || action === 'warn' || action === 'mute';
+    const shouldDelete = action === 'delete';
+
     switch (report.contentType) {
       case 'post':
         if (this.postModule) {
-          this.postModule.hidePost(report.contentId);
+          if (shouldDelete) {
+          this.postModule.deletePost(report.contentId);
+          } else if (shouldHide) {
+            this.postModule.hidePost(report.contentId);
+          }
         }
         break;
       case 'comment':
         if (this.postModule) {
-          this.postModule.hideComment(report.contentId);
+          if (shouldDelete) {
+            this.postModule.deleteComment(report.contentId);
+          } else if (shouldHide) {
+            this.postModule.hideComment(report.contentId);
+          }
         }
         break;
       case 'message':
         if (this.messageModule) {
-          const msg = this.messageModule.getMessage(report.contentId);
-          if (msg) {
+          if (shouldDelete) {
             this.messageModule.deleteMessage(report.contentId);
+          } else if (shouldHide) {
+            this.messageModule.hideMessage(report.contentId);
           }
         }
         break;
       case 'task':
         if (this.taskModule) {
-          this.taskModule.cancelTask(report.contentId);
+          if (shouldDelete || shouldHide) {
+            this.taskModule.cancelTask(report.contentId);
+          }
+        }
+        break;
+      case 'user':
+        if (action === 'mute' && this.userModule) {
         }
         break;
     }
+  }
+
+  private desensitizeReport(report: Report): Report {
+    if (this.isAdmin) {
+      return report;
+    }
+
+    const {
+      reportedUser,
+      handler,
+      handlerId,
+      internalNote,
+      ...rest
+    } = report;
+
+    return {
+      ...rest,
+      reportedUser: undefined,
+      handler: undefined,
+      handlerId: undefined,
+      internalNote: undefined
+    } as Report;
   }
 
   getMyReports(params: { page?: number; pageSize?: number; status?: ReportStatus }): ReportListResult {
@@ -299,7 +365,10 @@ export class ReportModule extends BaseModule {
     }
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
-    return this.reportStore.paginate(reports, params);
+
+    const result = this.reportStore.paginate(reports, params);
+    result.list = result.list.map(r => this.desensitizeReport(r));
+    return result;
   }
 
   getReportStats(): {
@@ -329,6 +398,16 @@ export class ReportModule extends BaseModule {
     ];
   }
 
+  getActionList(): { action: ReportAction; label: string }[] {
+    return [
+      { action: 'hide', label: '隐藏内容' },
+      { action: 'delete', label: '删除内容' },
+      { action: 'warn', label: '发送警告' },
+      { action: 'mute', label: '禁言处罚' },
+      { action: 'no_action', label: '不处理' }
+    ];
+  }
+
   cancelReport(reportId: string): boolean {
     this.requireLogin();
     const userId = this.currentUserId!;
@@ -344,7 +423,7 @@ export class ReportModule extends BaseModule {
       throw new Error('只能取消待处理的举报');
     }
 
-    this.reportStore.update(reportId, { status: 'rejected', handleResult: '用户撤销' });
+    this.reportStore.update(reportId, { status: 'rejected', handleResult: '用户撤销', action: 'no_action' });
     return true;
   }
 }

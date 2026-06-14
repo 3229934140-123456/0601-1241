@@ -1,4 +1,4 @@
-import { BaseEntity, UserProfile, PaginationParams, PaginationResult, ReportStatus, ReportType } from './common';
+import { BaseEntity, UserProfile, PaginationParams, PaginationResult, ReportStatus, ReportType, ReportAction } from './common';
 
 export interface Report extends BaseEntity {
   reporterId: string;
@@ -16,6 +16,9 @@ export interface Report extends BaseEntity {
   handler?: UserProfile;
   handledAt?: number;
   handleResult?: string;
+  action?: ReportAction;
+  internalNote?: string;
+  muteDuration?: number;
 }
 
 export interface CreateReportParams {
@@ -40,6 +43,9 @@ export interface HandleReportParams {
   reportId: string;
   status: ReportStatus;
   handleResult: string;
+  action?: ReportAction;
+  internalNote?: string;
+  muteDuration?: number;
 }
 
 export interface SensitiveWordHit {

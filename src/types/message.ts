@@ -2,7 +2,7 @@ import { BaseEntity, UserProfile, PaginationParams, PaginationResult } from './c
 
 export type MessageType = 'private' | 'system' | 'invitation' | 'notification';
 
-export type MessageStatus = 'unread' | 'read' | 'deleted';
+export type MessageStatus = 'unread' | 'read' | 'deleted' | 'hidden';
 
 export interface Message extends BaseEntity {
   type: MessageType;

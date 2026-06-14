@@ -32,3 +32,5 @@ export type ContentStatus = 'draft' | 'published' | 'reviewing' | 'hidden' | 'de
 export type ReportStatus = 'pending' | 'processing' | 'resolved' | 'rejected';
 
 export type ReportType = 'spam' | 'harassment' | 'violence' | 'pornography' | 'other';
+
+export type ReportAction = 'hide' | 'delete' | 'warn' | 'mute' | 'no_action';

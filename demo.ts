@@ -1,4 +1,4 @@
-import { JobSocialSDK, createSDK, UserProfile } from './src';
+import { JobSocialSDK, createSDK, UserProfile, ReportAction } from './src';
 
 const sdk = createSDK({
   appId: 'test-app-id',
@@ -6,12 +6,12 @@ const sdk = createSDK({
   enableSensitiveWordCheck: true,
   sensitiveWords: ['测试敏感词', '违规内容'],
   callback: {
-    activitySignupUrl: '',
-    userDynamicSyncUrl: '',
-    postPublishUrl: '',
+    activitySignupUrl: ['https://biz1.example.com/callback/activity', 'https://biz2.example.com/webhook/activity'],
+    userDynamicSyncUrl: 'https://biz1.example.com/callback/dynamic',
+    postPublishUrl: ['https://biz1.example.com/callback/post'],
     taskCompleteUrl: '',
-    reportSubmitUrl: '',
-    timeout: 10000,
+    reportSubmitUrl: 'https://biz1.example.com/callback/report',
+    timeout: 3000,
     maxRetries: 3
   }
 });
@@ -43,55 +43,101 @@ const user2: UserProfile = {
 };
 
 const adminUser: UserProfile = {
-  ...user1,
   id: 'admin_001',
   nickname: '管理员',
+  avatar: 'https://example.com/admin.jpg',
+  bio: '社区管理员',
+  contributionValue: 9999,
+  level: 10,
+  isVerified: true,
+  tags: ['管理员'],
   createdAt: Date.now(),
   updatedAt: Date.now()
 };
 
 async function runDemo() {
-  console.log('=== 社交互动平台 SDK v2 演示 ===\n');
+  console.log('=== 社交互动平台 SDK v3 演示 ===\n');
 
   sdk.user.createUser(user1);
   sdk.user.createUser(user2);
   sdk.user.createUser(adminUser);
 
-  console.log('--- 1. 圈子规则支持「禁止广告」等管理用语 ---');
-  sdk.setCurrentUser(user1);
-  const circle = sdk.topic.createJobCircle({
-    name: '前端求职互助圈',
-    description: '前端求职者互助交流',
-    rules: ['遵守社区规范', '文明交流', '禁止广告', '禁止留联系方式'],
-    isPublic: true
-  });
-  console.log(`✓ 圈子创建成功，规则: ${circle.rules.join('、')}`);
-
-  console.log('\n--- 2. 发布帖子（发帖内容含敏感词会被拦住）---');
-  sdk.callback.onPostPublish((event) => {
-    console.log(`  [回调] 帖子发布事件: postId=${event.data.postId}`);
-  });
-  sdk.callback.onUserDynamicSync((event) => {
-    console.log(`  [动态同步] ${event.data.userId} - ${event.data.dynamicType}`);
-  });
-
+  console.log('--- 1. 内容治理：完整处置动作（隐藏/删除/警告/禁言）---');
+  sdk.setCurrentUser(user2);
   const post = sdk.post.publishPost({
     type: 'experience',
-    title: '字节跳动前端面试经验分享',
-    content: '三轮技术面加一轮HR面，面试官很专业...'
+    title: '某厂面试经验分享',
+    content: '这是一篇用来演示用的帖子内容...'
   });
   console.log(`✓ 发布帖子: ${post.title}`);
-  sdk.setCurrentUser(adminUser);
-  console.log(`  回调统计: ${JSON.stringify(sdk.callback.getCallbackStats())}`);
+
   sdk.setCurrentUser(user1);
-
-  const comment = sdk.post.publishComment({
-    postId: post.id,
-    content: '写得很好！补充一下三面的系统设计题...'
+  const report = sdk.report.submitReport({
+    type: 'spam',
+    contentType: 'post',
+    contentId: post.id,
+    reason: '虚假信息'
   });
-  console.log(`✓ 发布评论: ${comment.content.slice(0, 25)}...`);
+  console.log(`✓ 提交举报: ${report.type}`);
 
-  console.log('\n--- 3. 互助任务完整流程（接受→完成→评价+动态+通知）---');
+  const myReport = sdk.report.getReport(report.id)!;
+  console.log(`  举报人视角 - 状态: ${myReport.status}, 结论: ${myReport.handleResult || '待处理'}`);
+  console.log(`  举报人视角 - 被举报人信息: ${myReport.reportedUser ? '有' : '无(已脱敏)'}`);
+  console.log(`  举报人视角 - 内部备注: ${myReport.internalNote ? '有' : '无(已脱敏)'}`);
+
+  sdk.setCurrentUser(adminUser);
+  console.log(`  管理员处置选项: ${sdk.report.getActionList().map(a => `${a.action}(${a.label})`).join('、')}`);
+
+  sdk.report.handleReport({
+    reportId: report.id,
+    status: 'resolved',
+    handleResult: '内容确属虚假信息',
+    action: 'hide' as ReportAction,
+    internalNote: '初犯，给予警告，记录在案'
+  });
+  console.log(`✓ 管理员处理 - 隐藏内容+内部备注`);
+
+  const adminView = sdk.report.getReport(report.id)!;
+  console.log(`  管理员视角 - 处置动作: ${adminView.action}`);
+  console.log(`  管理员视角 - 内部备注: ${adminView.internalNote}`);
+  console.log(`  帖子当前状态: ${sdk.post.getPost(post.id)?.status}`);
+
+  console.log('\n--- 2. 私信举报通过后，违规消息在会话里隐藏 ---');
+  sdk.setCurrentUser(user2);
+  const msg = sdk.message.sendPrivateMessage({
+    receiverId: 'user_001',
+    content: '你好，想和你聊聊简历的事'
+  });
+  console.log(`✓ 发送私信: ${msg.content.slice(0, 25)}...`);
+
+  sdk.setCurrentUser(user1);
+  const beforeMsgs = sdk.message.getPrivateMessages('user_002', {});
+  console.log(`  举报前会话消息数: ${beforeMsgs.total}`);
+
+  const msgReport = sdk.report.submitReport({
+    type: 'spam',
+    contentType: 'message',
+    contentId: msg.id,
+    reason: '骚扰信息'
+  });
+
+  sdk.setCurrentUser(adminUser);
+  sdk.report.handleReport({
+    reportId: msgReport.id,
+    status: 'resolved',
+    handleResult: '私信违规，已隐藏',
+    action: 'hide' as ReportAction
+  });
+  console.log(`✓ 管理员处理私信举报 - 隐藏消息`);
+
+  sdk.setCurrentUser(user1);
+  const afterMsgs = sdk.message.getPrivateMessages('user_002', {});
+  console.log(`  处理后会话消息数: ${afterMsgs.total} (应该少了1条)`);
+  console.log(`  普通用户视角 - getMessage: ${sdk.message.getMessage(msg.id) ? '能看到' : '看不到(已隐藏)'}`);
+  sdk.setCurrentUser(adminUser);
+  console.log(`  管理员视角 - 消息状态: ${sdk.message.getMessage(msg.id)?.status}`);
+
+  console.log('\n--- 3. 任务动态更细：接受/完成/评价 分别同步 ---');
   sdk.setCurrentUser(user2);
   const task = sdk.task.createResumeReviewTask({
     title: '求大佬帮忙看看简历',
@@ -101,93 +147,40 @@ async function runDemo() {
     resumeUrl: 'https://example.com/resume.pdf',
     tags: ['简历修改']
   });
-  console.log(`✓ 发布任务: ${task.title}`);
+
+  let dynamicCount = 0;
+  sdk.callback.onUserDynamicSync(() => { dynamicCount++; });
 
   sdk.setCurrentUser(user1);
   const application = sdk.task.applyForTask({
     taskId: task.id,
     message: '我可以帮你看看简历'
   });
-  console.log(`✓ 申请任务成功`);
 
   sdk.setCurrentUser(user2);
+  const beforeCount = dynamicCount;
   sdk.task.acceptApplication(application.id);
-  console.log(`✓ 接受申请 - 认领人应已收到系统通知`);
+  console.log(`✓ 接受申请 - 新增动态: ${dynamicCount - beforeCount}条 (task_accept)`);
 
+  const beforeCount2 = dynamicCount;
   sdk.task.completeTask({ taskId: task.id });
-  console.log(`✓ 完成任务 - 双方应已收到系统通知`);
+  console.log(`✓ 完成任务 - 新增动态: ${dynamicCount - beforeCount2}条 (task_complete)`);
 
+  const beforeCount3 = dynamicCount;
   sdk.task.rateTask({
     taskId: task.id,
     rating: 5,
-    comment: '非常专业，改完简历拿到了面试！',
+    comment: '非常专业！',
     isHelpful: true
   });
-  console.log(`✓ 评价任务 - 认领人应已收到评价通知`);
+  console.log(`✓ 评价任务 - 新增动态: ${dynamicCount - beforeCount3}条 (task_rate)`);
+  console.log(`  总计动态同步次数: ${dynamicCount} (期望:3)`);
 
-  console.log('\n--- 4. 任务列表分类查看 ---');
-  sdk.setCurrentUser(user2);
-  const published = sdk.task.getMyPublishedTasks({ pageSize: 5 });
-  console.log(`  我发布的任务: ${published.total}条`);
-  sdk.setCurrentUser(user1);
-  const claimed = sdk.task.getMyClaimedTasks({ pageSize: 5 });
-  console.log(`  我认领的任务: ${claimed.total}条`);
-  const completed = sdk.task.getMyCompletedTasks({});
-  console.log(`  已完成的任务: ${completed.total}条`);
-
-  console.log('\n--- 5. 内容举报（自动关联内容和被举报人）---');
-  sdk.setCurrentUser(user1);
-  const report = sdk.report.submitReport({
-    type: 'spam',
-    contentType: 'post',
-    contentId: post.id,
-    reason: '这个帖子涉嫌虚假信息'
-  });
-  console.log(`✓ 举报提交成功`);
-  console.log(`  举报内容快照: ${(report.contentSnapshot || '').slice(0, 40)}...`);
-  console.log(`  被举报人: ${report.reportedUser?.nickname}`);
-
-  console.log('\n--- 6. 管理员处理举报（自动隐藏+通知双方）---');
+  console.log('\n--- 4. 数据回调多地址：分别推送，独立记录 ---');
   sdk.setCurrentUser(adminUser);
-  const handled = sdk.report.handleReport({
-    reportId: report.id,
-    status: 'resolved',
-    handleResult: '内容确属虚假信息，已隐藏'
-  });
-  console.log(`✓ 举报已处理: ${handled?.status}`);
-  console.log(`  帖子当前状态: ${sdk.post.getPost(post.id)?.status}`);
+  sdk.callback.clearCallbacks();
 
   sdk.setCurrentUser(user1);
-  const user1Unread = sdk.message.getUnreadCount();
-  console.log(`  举报人未读消息: ${user1Unread.system}条`);
-  sdk.setCurrentUser(user2);
-  const user2Unread = sdk.message.getUnreadCount();
-  console.log(`  被举报人未读消息: ${user2Unread.system}条`);
-
-  console.log('\n--- 7. 普通用户只能看自己的举报 ---');
-  sdk.setCurrentUser(user1);
-  const myReports = sdk.report.getMyReports({});
-  console.log(`  user_001 举报记录: ${myReports.total}条`);
-  sdk.setCurrentUser(user2);
-  const otherReports = sdk.report.getMyReports({});
-  console.log(`  user_002 举报记录: ${otherReports.total}条`);
-
-  console.log('\n--- 8. 数据回调状态查询 ---');
-  sdk.setCurrentUser(adminUser);
-  const stats = sdk.callback.getCallbackStats();
-  console.log(`  回调统计: 总${stats.total}条, 成功${stats.success}, 失败${stats.failed}, 待处理${stats.pending}`);
-
-  const failedCallbacks = sdk.callback.getCallbacksByStatus('failed', { pageSize: 5 });
-  console.log(`  失败回调: ${failedCallbacks.total}条`);
-  if (failedCallbacks.list.length > 0) {
-    const retryResult = await sdk.callback.retryCallback(failedCallbacks.list[0].id);
-    console.log(`  重试结果: ${retryResult ? '成功' : '失败'}`);
-  }
-
-  console.log('\n--- 9. 活动报名回调 ---');
-  sdk.callback.onActivitySignup((event) => {
-    console.log(`  [回调] 活动报名: ${event.data.activityName} - ${event.data.userName}`);
-  });
   sdk.callback.triggerActivitySignup({
     activityId: 'act_001',
     activityName: '春季招聘会',
@@ -196,16 +189,39 @@ async function runDemo() {
     signupTime: Date.now()
   });
 
-  console.log('\n--- 10. 发帖回调只触发一次验证 ---');
-  let postPublishCount = 0;
-  sdk.callback.onPostPublish(() => { postPublishCount++; });
-  sdk.setCurrentUser(user1);
-  sdk.post.publishPost({
-    type: 'discussion',
-    title: '验证回调只触发一次',
-    content: '这条帖子只应触发一次回调事件'
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  sdk.setCurrentUser(adminUser);
+  const allCallbacks = sdk.callback.getCallbackList({ pageSize: 20 });
+  const activityCallbacks = sdk.callback.getCallbacksByEventType('activity_signup', { pageSize: 20 });
+  console.log(`  活动报名回调 - 总记录: ${activityCallbacks.total}条 (配置了2个地址)`);
+
+  const statsByUrl = sdk.callback.getCallbackStatsByUrl();
+  console.log(`  按地址统计:`);
+  statsByUrl.forEach(s => {
+    console.log(`    ${s.url || '本地事件'}: 总${s.total}, 成功${s.success}, 失败${s.failed}`);
   });
-  console.log(`  发布1篇帖子后收到事件次数: ${postPublishCount} (期望:1)`);
+
+  console.log('\n--- 5. 回调筛选：按事件类型/状态/业务地址 ---');
+  const url1 = 'https://biz1.example.com/callback/activity';
+  const url1Callbacks = sdk.callback.getCallbacksByUrl(url1, {});
+  console.log(`  地址 biz1 的回调: ${url1Callbacks.total}条`);
+
+  const failedCallbacks = sdk.callback.getCallbacksByStatus('failed', { pageSize: 20 });
+  console.log(`  失败的回调: ${failedCallbacks.total}条 (地址不可达，应该都是失败)`);
+
+  console.log(`  事件类型列表(去重): ${[...new Set(allCallbacks.list.map(c => c.eventType))].join(', ')}`);
+
+  console.log('\n--- 6. 任务双方消息通知 ---');
+  sdk.setCurrentUser(user1);
+  const user1Unread = sdk.message.getUnreadCount();
+  console.log(`  user1(认领方)系统未读: ${user1Unread.system}条`);
+  const user1Notifs = sdk.message.getSystemNotifications({ pageSize: 10, isRead: false });
+  console.log(`    - ${user1Notifs.list.slice(0, 3).map(n => n.content.slice(0, 30)).join('\n    - ')}`);
+
+  sdk.setCurrentUser(user2);
+  const user2Unread = sdk.message.getUnreadCount();
+  console.log(`  user2(发布方)系统未读: ${user2Unread.system}条`);
 
   console.log('\n=== 演示完成 ===');
   console.log(`SDK 版本: ${sdk.getVersion()}`);
