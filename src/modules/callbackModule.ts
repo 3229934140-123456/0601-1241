@@ -9,15 +9,17 @@ import {
   CallbackEvent,
   CallbackHandler,
   CallbackType,
+  CallbackStatus,
   ActivitySignupData,
   UserDynamicData
 } from '../types';
-import { generateId } from '../utils/helpers';
+import { generateId, getCurrentTime } from '../utils/helpers';
 
 export class CallbackModule extends BaseModule {
   private callbackStore: BaseStore<CallbackRecord>;
   private handlers: Map<CallbackType, Set<CallbackHandler>> = new Map();
   private config: CallbackConfig;
+  private messageModule: any;
 
   constructor(context: SDKContext) {
     super(context);
@@ -26,9 +28,19 @@ export class CallbackModule extends BaseModule {
     this.setupEventListeners();
   }
 
+  setMessageModule(messageModule: any): void {
+    this.messageModule = messageModule;
+  }
+
+  private notifyUser(userId: string, content: string, category: string, relatedId?: string, relatedType?: string): void {
+    if (this.messageModule) {
+      this.messageModule.sendSystemNotification(userId, content, category, relatedId, relatedType);
+    }
+  }
+
   private setupEventListeners(): void {
     this.eventBus.on('post:publish', (post: any) => {
-      this.triggerCallback('post_publish', 'post_publish', {
+      this.pushCallback('post_publish', {
         postId: post.id,
         userId: post.userId,
         title: post.title,
@@ -37,7 +49,7 @@ export class CallbackModule extends BaseModule {
         timestamp: post.createdAt
       });
 
-      this.triggerUserDynamic({
+      this.syncUserDynamic({
         userId: post.userId,
         dynamicType: 'post_publish',
         dynamicId: post.id,
@@ -49,7 +61,7 @@ export class CallbackModule extends BaseModule {
     });
 
     this.eventBus.on('comment:publish', (comment: any) => {
-      this.triggerUserDynamic({
+      this.syncUserDynamic({
         userId: comment.userId,
         dynamicType: 'comment_publish',
         dynamicId: comment.id,
@@ -61,48 +73,110 @@ export class CallbackModule extends BaseModule {
     });
 
     this.eventBus.on('task:claim', (data: any) => {
-      this.triggerUserDynamic({
+      this.syncUserDynamic({
         userId: data.claimerId,
         dynamicType: 'task_claim',
         dynamicId: data.taskId,
-        timestamp: Date.now(),
+        timestamp: getCurrentTime(),
         relatedId: data.taskId,
         relatedType: 'task'
       });
     });
 
+    this.eventBus.on('task:accept', (data: any) => {
+      this.syncUserDynamic({
+        userId: data.claimerId,
+        dynamicType: 'task_claim',
+        dynamicId: data.taskId,
+        content: '任务已被接受',
+        timestamp: getCurrentTime(),
+        relatedId: data.taskId,
+        relatedType: 'task'
+      });
+
+      this.notifyUser(
+        data.claimerId,
+        '您申请的互助任务已被接受，快去完成吧！',
+        'task',
+        data.taskId,
+        'task'
+      );
+    });
+
     this.eventBus.on('task:complete', (data: any) => {
-      this.triggerCallback('task_complete', 'task_complete', {
+      this.pushCallback('task_complete', {
         taskId: data.taskId,
         task: data.task,
-        timestamp: Date.now()
+        timestamp: getCurrentTime()
       });
 
       if (data.task?.claimerId) {
-        this.triggerUserDynamic({
+        this.syncUserDynamic({
           userId: data.task.claimerId,
           dynamicType: 'task_complete',
           dynamicId: data.taskId,
-          timestamp: Date.now(),
+          content: '完成了互助任务',
+          timestamp: getCurrentTime(),
           relatedId: data.taskId,
           relatedType: 'task'
         });
+
+        this.notifyUser(
+          data.task.publisherId,
+          '您发布的互助任务已被完成，快去评价吧！',
+          'task',
+          data.taskId,
+          'task'
+        );
+
+        this.notifyUser(
+          data.task.claimerId,
+          '恭喜！您已成功完成互助任务。',
+          'task',
+          data.taskId,
+          'task'
+        );
+      }
+    });
+
+    this.eventBus.on('task:rate', (data: any) => {
+      const review = data.review;
+      const task = data.task || {};
+
+      this.syncUserDynamic({
+        userId: review.reviewerId,
+        dynamicType: 'task_complete',
+        dynamicId: review.taskId,
+        content: `评价了互助任务，评分${review.rating}分`,
+        timestamp: getCurrentTime(),
+        relatedId: review.taskId,
+        relatedType: 'task'
+      });
+
+      if (task.claimerId) {
+        this.notifyUser(
+          task.claimerId,
+          `您完成的任务获得了${review.rating}星评价：${review.comment}`,
+          'task',
+          review.taskId,
+          'task'
+        );
       }
     });
 
     this.eventBus.on('user:follow', (data: any) => {
-      this.triggerUserDynamic({
+      this.syncUserDynamic({
         userId: data.userId,
         dynamicType: 'follow',
         dynamicId: data.targetUserId,
-        timestamp: Date.now(),
+        timestamp: getCurrentTime(),
         relatedId: data.targetUserId,
         relatedType: 'user'
       });
     });
 
     this.eventBus.on('report:submit', (report: any) => {
-      this.triggerCallback('report_submit', 'report_submit', {
+      this.pushCallback('report_submit', {
         reportId: report.id,
         reporterId: report.reporterId,
         type: report.type,
@@ -112,38 +186,81 @@ export class CallbackModule extends BaseModule {
         timestamp: report.createdAt
       });
     });
+
+    this.eventBus.on('activity:signup', (data: any) => {
+      this.pushCallback('activity_signup', data);
+    });
   }
 
-  on(type: CallbackType | string, handler: CallbackHandler): () => void {
-    const key = type as CallbackType;
-    if (!this.handlers.has(key)) {
-      this.handlers.set(key, new Set());
+  private async simulateHttpPush(url: string, payload: Record<string, any>): Promise<{ success: boolean; response?: string; error?: string }> {
+    if (!url) {
+      return { success: false, error: '回调地址未配置' };
     }
-    this.handlers.get(key)!.add(handler);
 
-    return () => {
-      this.off(key, handler);
-    };
-  }
+    try {
+      const controller = new AbortController();
+      const timeout = this.config.timeout || 10000;
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-  off(type: CallbackType | string, handler: CallbackHandler): void {
-    const key = type as CallbackType;
-    const handlers = this.handlers.get(key);
-    if (handlers) {
-      handlers.delete(handler);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: generateId('evt'),
+          timestamp: getCurrentTime(),
+          data: payload
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const text = await response.text();
+        return { success: true, response: text };
+      } else {
+        return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message || String(err) };
     }
   }
 
-  triggerCallback(
-    type: CallbackType,
-    eventType: string,
-    payload: Record<string, any>
-  ): void {
+  private async pushCallback(type: CallbackType, payload: Record<string, any>): Promise<void> {
+    const url = this.getCallbackUrl(type);
+
+    const record = this.callbackStore.create(
+      {
+        type,
+        eventType: type,
+        callbackUrl: url || '',
+        payload,
+        status: 'pending' as CallbackStatus,
+        retryCount: 0
+      },
+      'cb'
+    );
+
+    this.invokeLocalHandlers(type, payload);
+
+    if (url) {
+      const result = await this.simulateHttpPush(url, payload);
+      this.callbackStore.update(record.id, {
+        status: result.success ? 'success' : 'failed',
+        response: result.response,
+        errorMessage: result.error
+      });
+    } else {
+      this.callbackStore.update(record.id, { status: 'success' });
+    }
+  }
+
+  private invokeLocalHandlers(type: CallbackType, payload: Record<string, any>): void {
     const event: CallbackEvent = {
       type,
-      eventType,
+      eventType: type,
       data: payload,
-      timestamp: Date.now(),
+      timestamp: getCurrentTime(),
       eventId: generateId('evt')
     };
 
@@ -162,18 +279,54 @@ export class CallbackModule extends BaseModule {
         }
       });
     }
+  }
 
-    this.callbackStore.create(
+  private async syncUserDynamic(data: UserDynamicData): Promise<void> {
+    const url = this.getCallbackUrl('user_dynamic_sync');
+
+    const record = this.callbackStore.create(
       {
-        type,
-        eventType,
-        callbackUrl: this.getCallbackUrl(type) || '',
-        payload,
-        status: 'pending',
+        type: 'user_dynamic_sync' as CallbackType,
+        eventType: 'user_dynamic_sync',
+        callbackUrl: url || '',
+        payload: data as unknown as Record<string, any>,
+        status: 'pending' as CallbackStatus,
         retryCount: 0
       },
       'cb'
     );
+
+    this.invokeLocalHandlers('user_dynamic_sync', data as unknown as Record<string, any>);
+
+    if (url) {
+      const result = await this.simulateHttpPush(url, data as unknown as Record<string, any>);
+      this.callbackStore.update(record.id, {
+        status: result.success ? 'success' : 'failed',
+        response: result.response,
+        errorMessage: result.error
+      });
+    } else {
+      this.callbackStore.update(record.id, { status: 'success' });
+    }
+  }
+
+  on(type: CallbackType | string, handler: CallbackHandler): () => void {
+    const key = type as CallbackType;
+    if (!this.handlers.has(key)) {
+      this.handlers.set(key, new Set());
+    }
+    this.handlers.get(key)!.add(handler);
+    return () => { this.off(key, handler); };
+  }
+
+  off(type: CallbackType | string, handler: CallbackHandler): void {
+    const key = type as CallbackType;
+    const handlers = this.handlers.get(key);
+    if (handlers) { handlers.delete(handler); }
+  }
+
+  triggerCallback(type: CallbackType, eventType: string, payload: Record<string, any>): void {
+    this.pushCallback(type, payload);
   }
 
   private getCallbackUrl(type: CallbackType): string | undefined {
@@ -188,32 +341,18 @@ export class CallbackModule extends BaseModule {
   }
 
   triggerActivitySignup(data: ActivitySignupData): void {
-    this.triggerCallback('activity_signup', 'activity_signup', data);
+    this.pushCallback('activity_signup', data as unknown as Record<string, any>);
   }
 
   triggerUserDynamic(data: UserDynamicData): void {
-    this.triggerCallback('user_dynamic_sync', 'user_dynamic_sync', data);
+    this.syncUserDynamic(data);
   }
 
-  onActivitySignup(handler: CallbackHandler): () => void {
-    return this.on('activity_signup', handler);
-  }
-
-  onUserDynamicSync(handler: CallbackHandler): () => void {
-    return this.on('user_dynamic_sync', handler);
-  }
-
-  onPostPublish(handler: CallbackHandler): () => void {
-    return this.on('post_publish', handler);
-  }
-
-  onTaskComplete(handler: CallbackHandler): () => void {
-    return this.on('task_complete', handler);
-  }
-
-  onReportSubmit(handler: CallbackHandler): () => void {
-    return this.on('report_submit', handler);
-  }
+  onActivitySignup(handler: CallbackHandler): () => void { return this.on('activity_signup', handler); }
+  onUserDynamicSync(handler: CallbackHandler): () => void { return this.on('user_dynamic_sync', handler); }
+  onPostPublish(handler: CallbackHandler): () => void { return this.on('post_publish', handler); }
+  onTaskComplete(handler: CallbackHandler): () => void { return this.on('task_complete', handler); }
+  onReportSubmit(handler: CallbackHandler): () => void { return this.on('report_submit', handler); }
 
   getCallbackList(params: CallbackParams): CallbackListResult {
     if (!this.isAdmin) {
@@ -225,13 +364,11 @@ export class CallbackModule extends BaseModule {
     if (params.type) {
       records = records.filter(r => r.type === params.type);
     }
-
     if (params.status) {
       records = records.filter(r => r.status === params.status);
     }
 
     records.sort((a, b) => b.createdAt - a.createdAt);
-
     return this.callbackStore.paginate(records, params);
   }
 
@@ -242,7 +379,11 @@ export class CallbackModule extends BaseModule {
     return this.callbackStore.getById(recordId);
   }
 
-  retryCallback(recordId: string): boolean {
+  getCallbacksByStatus(status: CallbackStatus, params: CallbackParams = {}): CallbackListResult {
+    return this.getCallbackList({ ...params, status });
+  }
+
+  async retryCallback(recordId: string): Promise<boolean> {
     if (!this.isAdmin) {
       throw new Error('只有管理员可以重试回调');
     }
@@ -258,38 +399,26 @@ export class CallbackModule extends BaseModule {
     this.callbackStore.update(recordId, {
       status: 'retrying',
       retryCount: record.retryCount + 1,
-      lastRetryAt: Date.now()
+      lastRetryAt: getCurrentTime()
     });
 
-    const event: CallbackEvent = {
-      type: record.type,
-      eventType: record.eventType,
-      data: record.payload,
-      timestamp: Date.now(),
-      eventId: generateId('evt')
-    };
-
-    const handlers = this.handlers.get(record.type);
-    if (handlers) {
-      handlers.forEach(handler => {
-        try {
-          handler(event);
-        } catch (error) {
-          console.error('Retry callback error:', error);
-        }
+    if (record.callbackUrl) {
+      const result = await this.simulateHttpPush(record.callbackUrl, record.payload);
+      this.callbackStore.update(recordId, {
+        status: result.success ? 'success' : 'failed',
+        response: result.response,
+        errorMessage: result.error
       });
+      return result.success;
     }
 
+    this.invokeLocalHandlers(record.type, record.payload);
     this.callbackStore.update(recordId, { status: 'success' });
-
     return true;
   }
 
   setCallbackConfig(config: Partial<CallbackConfig>): void {
-    this.config = {
-      ...this.config,
-      ...config
-    };
+    this.config = { ...this.config, ...config };
   }
 
   getCallbackConfig(): CallbackConfig {
@@ -308,18 +437,8 @@ export class CallbackModule extends BaseModule {
     }
 
     const records = this.callbackStore.getAll();
-    const stats = {
-      total: records.length,
-      success: 0,
-      failed: 0,
-      pending: 0,
-      retrying: 0
-    };
-
-    records.forEach(r => {
-      stats[r.status]++;
-    });
-
+    const stats = { total: records.length, success: 0, failed: 0, pending: 0, retrying: 0 };
+    records.forEach(r => { stats[r.status]++; });
     return stats;
   }
 

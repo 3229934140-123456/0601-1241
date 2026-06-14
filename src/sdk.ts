@@ -56,9 +56,8 @@ export class JobSocialSDK {
     this.post.setDependencies(this.user, this.topic);
     this.task.setDependencies(this.user, this.post);
     this.message.setDependencies(this.user);
-    this.report.setDependencies(this.user, this.post, this.message);
-
-    this.setupInternalListeners();
+    this.report.setDependencies(this.user, this.post, this.message, this.task);
+    this.callback.setMessageModule(this.message);
   }
 
   static getInstance(config?: SDKConfig): JobSocialSDK {
@@ -68,16 +67,6 @@ export class JobSocialSDK {
       JobSocialSDK.instance.updateConfig(config);
     }
     return JobSocialSDK.instance;
-  }
-
-  private setupInternalListeners(): void {
-    this.eventBus.on('post:publish', (post: any) => {
-      this.callback.triggerCallback?.('post_publish', 'post_publish', post);
-    });
-
-    this.eventBus.on('report.submit', (report: any) => {
-      this.callback.triggerCallback?.('report_submit', 'report_submit', report);
-    });
   }
 
   setCurrentUser(user: UserProfile): void {

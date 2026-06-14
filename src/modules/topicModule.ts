@@ -222,10 +222,6 @@ export class TopicModule extends BaseModule {
     this.checkContentSensitive(params.name);
     this.checkContentSensitive(params.description);
 
-    if (params.rules) {
-      params.rules.forEach(rule => this.checkContentSensitive(rule));
-    }
-
     const circle = this.circleStore.create(
       {
         name: params.name,
@@ -271,8 +267,6 @@ export class TopicModule extends BaseModule {
       throw new Error('只有管理员可以修改圈子规则');
     }
 
-    params.rules.forEach(rule => this.checkContentSensitive(rule));
-
     const updated = this.circleStore.update(params.circleId, {
       rules: params.rules
     });
@@ -298,9 +292,6 @@ export class TopicModule extends BaseModule {
     }
     if (updates.description) {
       this.checkContentSensitive(updates.description);
-    }
-    if (updates.rules) {
-      updates.rules.forEach(rule => this.checkContentSensitive(rule));
     }
 
     return this.circleStore.update(circleId, updates);

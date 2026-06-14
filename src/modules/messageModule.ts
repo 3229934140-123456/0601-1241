@@ -436,4 +436,8 @@ export class MessageModule extends BaseModule {
   sendActivityInvitation(receiverId: string, activityId: string, message: string): InvitationMessage {
     return this.sendInvitation(receiverId, 'activity', activityId, message);
   }
+
+  getMessage(messageId: string): Message | undefined {
+    return this.messageStore.getById(messageId);
+  }
 }

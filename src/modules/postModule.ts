@@ -500,4 +500,23 @@ export class PostModule extends BaseModule {
   getPostCountByUser(userId: string): number {
     return this.postStore.findMany(p => p.userId === userId && p.status === 'published').length;
   }
+
+  getComment(commentId: string): Comment | undefined {
+    return this.commentStore.getById(commentId);
+  }
+
+  hidePost(postId: string): boolean {
+    const post = this.postStore.getById(postId);
+    if (!post) return false;
+    this.postStore.update(postId, { status: 'hidden' });
+    this.emit('post:hide', { postId });
+    return true;
+  }
+
+  hideComment(commentId: string): boolean {
+    const comment = this.commentStore.getById(commentId);
+    if (!comment) return false;
+    this.commentStore.update(commentId, { status: 'hidden' });
+    return true;
+  }
 }

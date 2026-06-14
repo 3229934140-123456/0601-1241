@@ -17,24 +17,32 @@ export class ReportModule extends BaseModule {
   private userModule: any;
   private postModule: any;
   private messageModule: any;
+  private taskModule: any;
 
   constructor(
     context: SDKContext,
     userModule?: any,
     postModule?: any,
-    messageModule?: any
+    messageModule?: any,
+    taskModule?: any
   ) {
     super(context);
     this.reportStore = new BaseStore<Report>();
     this.userModule = userModule;
     this.postModule = postModule;
     this.messageModule = messageModule;
+    this.taskModule = taskModule;
   }
 
-  setDependencies(userModule: any, postModule: any, messageModule: any): void {
+  setDependencies(userModule: any, postModule: any, messageModule: any, taskModule?: any): void {
     this.userModule = userModule;
     this.postModule = postModule;
     this.messageModule = messageModule;
+    this.taskModule = taskModule || this.taskModule;
+  }
+
+  setTaskModule(taskModule: any): void {
+    this.taskModule = taskModule;
   }
 
   private getUser(userId: string): UserProfile {
@@ -54,55 +62,80 @@ export class ReportModule extends BaseModule {
     };
   }
 
+  private resolveReportedContent(contentType: string, contentId: string): {
+    reportedUserId: string;
+    contentSnapshot: string;
+  } {
+    let reportedUserId = '';
+    let contentSnapshot = '';
+
+    switch (contentType) {
+      case 'post':
+        if (this.postModule) {
+          const post = this.postModule.getPost(contentId);
+          if (post) {
+            reportedUserId = post.userId;
+            contentSnapshot = `【帖子】${post.title}\n${post.content.slice(0, 300)}`;
+          }
+        }
+        break;
+      case 'comment':
+        if (this.postModule) {
+          const comment = this.postModule.getComment(contentId);
+          if (comment) {
+            reportedUserId = comment.userId;
+            contentSnapshot = `【评论】${comment.content.slice(0, 300)}`;
+          }
+        }
+        break;
+      case 'user':
+        if (this.userModule) {
+          const user = this.userModule.getUser(contentId);
+          if (user) {
+            reportedUserId = contentId;
+            contentSnapshot = `【用户】${user.nickname}`;
+          }
+        }
+        break;
+      case 'task':
+        if (this.taskModule) {
+          const task = this.taskModule.getTask(contentId);
+          if (task) {
+            reportedUserId = task.publisherId;
+            contentSnapshot = `【任务】${task.title}\n${task.description.slice(0, 200)}`;
+          }
+        }
+        break;
+      case 'message':
+        if (this.messageModule) {
+          const msg = this.messageModule.getMessage(contentId);
+          if (msg) {
+            reportedUserId = msg.senderId;
+            contentSnapshot = `【消息】${msg.content.slice(0, 300)}`;
+          }
+        }
+        break;
+    }
+
+    return { reportedUserId, contentSnapshot };
+  }
+
   submitReport(params: CreateReportParams): Report {
     this.requireLogin();
     const reporterId = this.currentUserId!;
 
     this.checkContentSensitive(params.reason);
 
-    let reportedUserId = '';
-    let contentSnapshot = params.contentSnapshot || '';
+    const { reportedUserId, contentSnapshot: autoSnapshot } = this.resolveReportedContent(
+      params.contentType,
+      params.contentId
+    );
 
-    switch (params.contentType) {
-      case 'post':
-        if (this.postModule) {
-          const post = this.postModule.getPost(params.contentId);
-          if (post) {
-            reportedUserId = post.userId;
-            contentSnapshot = contentSnapshot || post.title + ' - ' + post.content.slice(0, 200);
-          }
-        }
-        break;
-      case 'comment':
-        if (this.postModule) {
-          const comment = this.postModule.getComment?.(params.contentId);
-          if (comment) {
-            reportedUserId = comment.userId;
-            contentSnapshot = contentSnapshot || comment.content.slice(0, 200);
-          }
-        }
-        break;
-      case 'user':
-        reportedUserId = params.contentId;
-        break;
-      case 'task':
-        reportedUserId = '';
-        break;
-      case 'message':
-        if (this.messageModule) {
-          const msg = this.messageModule.getMessage?.(params.contentId);
-          if (msg) {
-            reportedUserId = msg.senderId;
-            contentSnapshot = contentSnapshot || msg.content.slice(0, 200);
-          }
-        }
-        break;
+    if (!reportedUserId) {
+      throw new Error('未找到被举报对象，内容可能已不存在');
     }
 
-    if (!reportedUserId && params.contentType !== 'task') {
-      throw new Error('未找到被举报对象');
-    }
-
+    const contentSnapshot = params.contentSnapshot || autoSnapshot;
     const reporter = this.getUser(reporterId);
     const reportedUser = reportedUserId ? this.getUser(reportedUserId) : undefined;
 
@@ -152,21 +185,17 @@ export class ReportModule extends BaseModule {
     if (params.status) {
       reports = reports.filter(r => r.status === params.status);
     }
-
     if (params.type) {
       reports = reports.filter(r => r.type === params.type);
     }
-
     if (params.contentType) {
       reports = reports.filter(r => r.contentType === params.contentType);
     }
-
     if (params.reporterId && this.isAdmin) {
       reports = reports.filter(r => r.reporterId === params.reporterId);
     }
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
-
     return this.reportStore.paginate(reports, params);
   }
 
@@ -193,11 +222,7 @@ export class ReportModule extends BaseModule {
     });
 
     if (params.status === 'resolved') {
-      if (report.contentType === 'post' && this.postModule) {
-        this.postModule.deletePost(report.contentId);
-      } else if (report.contentType === 'comment' && this.postModule) {
-        this.postModule.deleteComment?.(report.contentId);
-      }
+      this.hideReportedContent(report);
 
       if (this.userModule) {
         this.userModule.addContribution(report.reporterId, 'report_valid', report.id);
@@ -211,11 +236,57 @@ export class ReportModule extends BaseModule {
           report.id,
           'report'
         );
+
+        this.messageModule.sendSystemNotification(
+          report.reportedUserId,
+          `您发布的内容因违反社区规范已被隐藏，原因：${params.handleResult}`,
+          'system',
+          report.id,
+          'report'
+        );
       }
+    }
+
+    if (params.status === 'rejected' && this.messageModule) {
+      this.messageModule.sendSystemNotification(
+        report.reporterId,
+        `您的举报未被受理：${params.handleResult}`,
+        'system',
+        report.id,
+        'report'
+      );
     }
 
     this.emit('report:handle', { reportId: params.reportId, status: params.status });
     return updated;
+  }
+
+  private hideReportedContent(report: Report): void {
+    switch (report.contentType) {
+      case 'post':
+        if (this.postModule) {
+          this.postModule.hidePost(report.contentId);
+        }
+        break;
+      case 'comment':
+        if (this.postModule) {
+          this.postModule.hideComment(report.contentId);
+        }
+        break;
+      case 'message':
+        if (this.messageModule) {
+          const msg = this.messageModule.getMessage(report.contentId);
+          if (msg) {
+            this.messageModule.deleteMessage(report.contentId);
+          }
+        }
+        break;
+      case 'task':
+        if (this.taskModule) {
+          this.taskModule.cancelTask(report.contentId);
+        }
+        break;
+    }
   }
 
   getMyReports(params: { page?: number; pageSize?: number; status?: ReportStatus }): ReportListResult {
@@ -228,7 +299,6 @@ export class ReportModule extends BaseModule {
     }
 
     reports.sort((a, b) => b.createdAt - a.createdAt);
-
     return this.reportStore.paginate(reports, params);
   }
 
@@ -244,18 +314,8 @@ export class ReportModule extends BaseModule {
     }
 
     const reports = this.reportStore.getAll();
-    const stats = {
-      total: reports.length,
-      pending: 0,
-      processing: 0,
-      resolved: 0,
-      rejected: 0
-    };
-
-    reports.forEach(r => {
-      stats[r.status]++;
-    });
-
+    const stats = { total: reports.length, pending: 0, processing: 0, resolved: 0, rejected: 0 };
+    reports.forEach(r => { stats[r.status]++; });
     return stats;
   }
 

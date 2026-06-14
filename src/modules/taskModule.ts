@@ -290,7 +290,7 @@ export class TaskModule extends BaseModule {
         });
       });
 
-    this.emit('task:accept', { taskId: task.id, applicationId, claimerId: application.userId });
+    this.emit('task:accept', { taskId: task.id, applicationId, claimerId: application.userId, task: this.taskStore.getById(task.id) });
     return updatedApp;
   }
 
@@ -439,7 +439,7 @@ export class TaskModule extends BaseModule {
       'review'
     );
 
-    this.emit('task:rate', { taskId: params.taskId, review });
+    this.emit('task:rate', { taskId: params.taskId, review, task: this.taskStore.getById(params.taskId) });
     return review;
   }
 
@@ -451,7 +451,7 @@ export class TaskModule extends BaseModule {
     this.requireLogin();
     const userId = this.currentUserId!;
 
-    let tasks = this.taskStore.findMany(t => t.publisherId === userId);
+    let tasks = this.taskStore.findMany(t => t.publisherId === userId && t.status !== 'cancelled');
 
     if (params.status) {
       tasks = tasks.filter(t => t.status === params.status);
@@ -466,13 +466,33 @@ export class TaskModule extends BaseModule {
     this.requireLogin();
     const userId = this.currentUserId!;
 
-    let tasks = this.taskStore.findMany(t => t.claimerId === userId);
+    let tasks = this.taskStore.findMany(t => t.claimerId === userId && t.status !== 'cancelled');
 
     if (params.status) {
       tasks = tasks.filter(t => t.status === params.status);
     }
 
     tasks.sort((a, b) => b.createdAt - a.createdAt);
+
+    return this.taskStore.paginate(tasks, params);
+  }
+
+  getMyCompletedTasks(params: { page?: number; pageSize?: number; asPublisher?: boolean; asClaimer?: boolean }): TaskListResult {
+    this.requireLogin();
+    const userId = this.currentUserId!;
+
+    let tasks = this.taskStore.findMany(t => t.status === 'completed');
+
+    tasks = tasks.filter(t => {
+      const asPublisher = t.publisherId === userId;
+      const asClaimer = t.claimerId === userId;
+      if (params.asPublisher && params.asClaimer) return asPublisher || asClaimer;
+      if (params.asPublisher) return asPublisher;
+      if (params.asClaimer) return asClaimer;
+      return asPublisher || asClaimer;
+    });
+
+    tasks.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
 
     return this.taskStore.paginate(tasks, params);
   }
